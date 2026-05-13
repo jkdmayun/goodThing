@@ -11,32 +11,23 @@ const { spawn, spawnSync } = require('child_process');
 
 process.umask(0o077);
 
-// ================== 可调配置 ==================
-// Applications 面板通常会自动注入 PORT，HTTP 订阅服务监听 TCP PORT。
-// HY2 默认也使用同一个数字端口监听 UDP；TCP/UDP 可以共用同一个端口号。
 const APP_PORT = toInt(process.env.PORT, 7682);
 const HY2_PORT = toInt(process.env.HY2_PORT, APP_PORT);
 const BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
 
-// 公开给客户端连接的域名/IP。留空时，订阅接口会按访问时的 Host 自动生成。
-// 如果你的 Applications 平台「公网端口」和内部 PORT 不一样，请设置 PUBLIC_PORT。
-const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || process.env.HOST || '');
+const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || '');
 const PUBLIC_PORT = toInt(process.env.PUBLIC_PORT, HY2_PORT);
 
-// 访问 https://你的域名/<SUB_PATH> 获取订阅。强烈建议手动设置成 24 位以上随机字符串。
-// 不设置时会自动生成并保存在 state.json。
 const ENV_SUB_PATH = normalizeSubPath(process.env.SUB_PATH || process.env.TOKEN_PATH || '');
 
-// Hysteria TLS/SNI 设置。默认用自签证书 + pinSHA256。
 const SNI_HOST = cleanHost(process.env.SNI_HOST || 'www.bing.com') || 'www.bing.com';
-const SNI_GUARD = process.env.SNI_GUARD || 'strict'; // 连接异常时可改成 disable
+const SNI_GUARD = process.env.SNI_GUARD || 'strict';
+
 const NODE_NAME_ENV = process.env.NODE_NAME || '';
 const AUTH_PASS_ENV = process.env.AUTH_PASS || '';
 
-// 是否默认返回 base64 订阅；默认 plain text，一行一个节点。
 const DEFAULT_BASE64 = /^(1|true|yes)$/i.test(process.env.SUB_BASE64 || '');
 
-// 数据目录。Applications 通常没有 /root 权限，所以默认放在 HOME 或当前目录。
 const BASE_DIR = process.env.HY2_DIR || path.join(process.env.HOME || process.cwd(), '.mvh-hy2');
 const BIN = path.join(BASE_DIR, 'hysteria');
 const CONF = path.join(BASE_DIR, 'config.yaml');
@@ -51,7 +42,6 @@ let currentChild = null;
 let httpServer = null;
 let stopping = false;
 
-// ================== 工具函数 ==================
 function toInt(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
@@ -64,7 +54,9 @@ function ensureDir(dir) {
 function log(line) {
   const msg = `[${new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')}] ${line}`;
   process.stdout.write(msg + '\n');
-  try { fs.appendFileSync(LOG, msg + '\n'); } catch (_) {}
+  try {
+    fs.appendFileSync(LOG, msg + '\n');
+  } catch (_) {}
 }
 
 function cleanHost(value) {
@@ -88,12 +80,18 @@ function randomHex(bytes = 16) {
 }
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return fallback; }
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return fallback;
+  }
 }
 
 function writeFileSecure(file, content, mode = 0o600) {
   fs.writeFileSync(file, content, { mode });
-  try { fs.chmodSync(file, mode); } catch (_) {}
+  try {
+    fs.chmodSync(file, mode);
+  } catch (_) {}
 }
 
 function saveState(nextState) {
@@ -102,61 +100,78 @@ function saveState(nextState) {
 
 function initState() {
   const existing = readJson(STATE, {});
+
   const next = {
     authPass: AUTH_PASS_ENV || existing.authPass || randomHex(16),
-    nodeName: NODE_NAME_ENV || existing.nodeName || `hy2-${randomHex(3)}`,
+    nodeName: NODE_NAME_ENV || existing.nodeName || 'MVH-HY2',
     subPath: ENV_SUB_PATH || existing.subPath || `sub-${randomHex(18)}`,
     createdAt: existing.createdAt || new Date().toISOString()
   };
+
   saveState(next);
   return next;
 }
 
 function pickAsset() {
   const arch = os.arch();
+
   if (arch === 'x64') return 'hysteria-linux-amd64';
   if (arch === 'arm64') return 'hysteria-linux-arm64';
   if (arch === 'arm') return 'hysteria-linux-arm';
   if (arch === 'ia32') return 'hysteria-linux-386';
+
   return '';
 }
 
 function downloadToFile(url, destPath, mode = 0o700) {
   return new Promise((resolve, reject) => {
     const tmp = `${destPath}.download`;
-    try { fs.rmSync(tmp, { force: true }); } catch (_) {}
+
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (_) {}
 
     const file = fs.createWriteStream(tmp, { mode: 0o600 });
 
     function request(u, redirectsLeft = 5) {
-      https.get(u, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
-          res.resume();
-          return request(new URL(res.headers.location, u).toString(), redirectsLeft - 1);
-        }
+      https
+        .get(u, (res) => {
+          if (
+            res.statusCode >= 300 &&
+            res.statusCode < 400 &&
+            res.headers.location &&
+            redirectsLeft > 0
+          ) {
+            res.resume();
+            return request(new URL(res.headers.location, u).toString(), redirectsLeft - 1);
+          }
 
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume();
-          file.close(() => reject(new Error(`download failed: HTTP ${res.statusCode}`)));
-          return;
-        }
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            res.resume();
+            file.close(() => reject(new Error(`download failed: HTTP ${res.statusCode}`)));
+            return;
+          }
 
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close(() => {
-            try {
-              fs.renameSync(tmp, destPath);
-              fs.chmodSync(destPath, mode);
-              resolve();
-            } catch (e) {
-              reject(e);
-            }
+          res.pipe(file);
+
+          file.on('finish', () => {
+            file.close(() => {
+              try {
+                fs.renameSync(tmp, destPath);
+                fs.chmodSync(destPath, mode);
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            });
           });
+        })
+        .on('error', (err) => {
+          try {
+            file.close();
+          } catch (_) {}
+          reject(err);
         });
-      }).on('error', (err) => {
-        try { file.close(); } catch (_) {}
-        reject(err);
-      });
     }
 
     request(url);
@@ -165,8 +180,13 @@ function downloadToFile(url, destPath, mode = 0o700) {
 
 function binaryWorks() {
   if (!fs.existsSync(BIN)) return false;
+
   try {
-    const r = spawnSync(BIN, ['version'], { encoding: 'utf8', timeout: 8000 });
+    const r = spawnSync(BIN, ['version'], {
+      encoding: 'utf8',
+      timeout: 8000
+    });
+
     return r.status === 0;
   } catch (_) {
     return false;
@@ -183,26 +203,35 @@ async function ensureBinary() {
   if (!asset) throw new Error(`unsupported architecture: ${os.arch()}`);
 
   const url = `https://download.hysteria.network/app/latest/${asset}`;
-  log(`[hy2] downloading ${asset} ...`);
+
+  log(`[hy2] downloading ${asset}`);
   await downloadToFile(url, BIN, 0o700);
 
-  if (!binaryWorks()) throw new Error('downloaded hysteria binary cannot run');
+  if (!binaryWorks()) {
+    throw new Error('downloaded hysteria binary cannot run');
+  }
+
   log('[hy2] binary ready');
 }
 
 function ensureOpenSSL() {
-  const r = spawnSync('openssl', ['version'], { encoding: 'utf8' });
+  const r = spawnSync('openssl', ['version'], {
+    encoding: 'utf8'
+  });
+
   if (r.status !== 0) {
-    throw new Error('openssl not found; this image/runtime must include openssl');
+    throw new Error('openssl not found');
   }
 }
 
 function ensureCert() {
   ensureOpenSSL();
 
-  if (fs.existsSync(CERT) && fs.existsSync(KEY)) return;
+  if (fs.existsSync(CERT) && fs.existsSync(KEY)) {
+    return;
+  }
 
-  log(`[tls] generating self-signed cert for SNI ${SNI_HOST}`);
+  log(`[tls] generating self-signed cert for ${SNI_HOST}`);
 
   const args = [
     'req',
@@ -222,7 +251,10 @@ function ensureCert() {
     `subjectAltName=DNS:${SNI_HOST}`
   ];
 
-  const r = spawnSync('openssl', args, { stdio: 'ignore' });
+  const r = spawnSync('openssl', args, {
+    stdio: 'ignore'
+  });
+
   if (r.status !== 0) {
     throw new Error(`openssl cert generation failed, status=${r.status}`);
   }
@@ -237,12 +269,16 @@ function getCertPin() {
   const r = spawnSync(
     'openssl',
     ['x509', '-noout', '-fingerprint', '-sha256', '-in', CERT],
-    { encoding: 'utf8' }
+    {
+      encoding: 'utf8'
+    }
   );
 
-  if (r.status !== 0) throw new Error('failed to read certificate fingerprint');
+  if (r.status !== 0) {
+    throw new Error('failed to read certificate fingerprint');
+  }
 
-  const out = (r.stdout || '').trim();
+  const out = String(r.stdout || '').trim();
   const pin = out.split('=').pop().trim();
 
   if (!pin || !/^[0-9A-Fa-f:]+$/.test(pin)) {
@@ -288,13 +324,14 @@ function writeHy2Config() {
 
 function getRequestHost(req) {
   const xfHost = req.headers['x-forwarded-host'];
-  const hostHeader = Array.isArray(xfHost) ? xfHost[0] : (xfHost || req.headers.host || '');
+  const hostHeader = Array.isArray(xfHost) ? xfHost[0] : xfHost || req.headers.host || '';
   return cleanHost(hostHeader);
 }
 
 function buildHy2Uri(req) {
   const host = PUBLIC_HOST || getRequestHost(req) || 'your-domain.com';
   const port = PUBLIC_PORT || HY2_PORT;
+
   const auth = encodeURIComponent(state.authPass);
   const name = encodeURIComponent(state.nodeName);
 
@@ -308,8 +345,13 @@ function buildHy2Uri(req) {
 }
 
 function buildSubUrl(req) {
-  const proto = (req && (req.headers['x-forwarded-proto'] || '')).toString().split(',')[0] || 'https';
-  const host = (req && (req.headers['x-forwarded-host'] || req.headers.host)) || PUBLIC_HOST || 'your-domain.com';
+  const proto =
+    String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim() || 'https';
+
+  const host = req.headers['x-forwarded-host'] || req.headers.host || PUBLIC_HOST || 'your-domain.com';
+
   return `${proto}://${host}/${state.subPath}`;
 }
 
@@ -328,6 +370,7 @@ function send(res, status, content, type = 'text/plain; charset=utf-8') {
 function startHttpServer() {
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
+
     const pathname = decodeURIComponent(url.pathname)
       .replace(/^\/+/, '')
       .replace(/\/+$/, '');
@@ -338,6 +381,7 @@ function startHttpServer() {
 
     if (pathname === state.subPath) {
       const uri = buildHy2Uri(req);
+
       const wantBase64 =
         DEFAULT_BASE64 ||
         /^(1|true|yes)$/i.test(
@@ -355,13 +399,19 @@ function startHttpServer() {
 
     if (pathname === `${state.subPath}/json`) {
       const uri = buildHy2Uri(req);
+
       return send(
         res,
         200,
         JSON.stringify(
           {
             subscription: buildSubUrl(req),
-            node: uri
+            node: uri,
+            auth: state.authPass,
+            host: PUBLIC_HOST || getRequestHost(req),
+            port: PUBLIC_PORT || HY2_PORT,
+            sni: SNI_HOST,
+            pinSHA256: certPin
           },
           null,
           2
@@ -378,13 +428,14 @@ function startHttpServer() {
   });
 
   httpServer.listen(APP_PORT, BIND_HOST, () => {
-    log(`[web] listening on tcp://${BIND_HOST}:${APP_PORT}`);
+    log(`[web] listening tcp://${BIND_HOST}:${APP_PORT}`);
+    log(`[hy2] listening udp://0.0.0.0:${HY2_PORT}`);
     log(`[web] subscription path: /${state.subPath}`);
 
     if (PUBLIC_HOST) {
       log(`[web] subscription URL: https://${PUBLIC_HOST}/${state.subPath}`);
     } else {
-      log('[web] set PUBLIC_HOST to print a fixed subscription URL; otherwise it is generated from request Host');
+      log('[web] PUBLIC_HOST is empty; subscription host will be generated from request Host');
     }
   });
 
@@ -400,7 +451,7 @@ async function runHy2Forever() {
   let backoff = 2;
 
   while (!stopping) {
-    log(`[hy2] starting server on udp/:${HY2_PORT}`);
+    log(`[hy2] starting server with ${CONF}`);
 
     currentChild = spawn(BIN, ['server', '-c', CONF], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -410,12 +461,17 @@ async function runHy2Forever() {
       }
     });
 
-    currentChild.stdout.on('data', (d) => process.stdout.write(`[hy2 stdout] ${d}`));
-    currentChild.stderr.on('data', (d) => process.stderr.write(`[hy2 stderr] ${d}`));
+    currentChild.stdout.on('data', (d) => {
+      process.stdout.write(`[hy2 stdout] ${d}`);
+    });
+
+    currentChild.stderr.on('data', (d) => {
+      process.stderr.write(`[hy2 stderr] ${d}`);
+    });
 
     const exitInfo = await new Promise((resolve) => {
       currentChild.on('exit', (code, signal) => resolve({ code, signal }));
-      currentChild.on('error', (err) => resolve({ error: err }));
+      currentChild.on('error', (error) => resolve({ error }));
     });
 
     currentChild = null;
@@ -429,6 +485,7 @@ async function runHy2Forever() {
     }
 
     log(`[hy2] restart after ${backoff}s`);
+
     await new Promise((r) => setTimeout(r, backoff * 1000));
     backoff = Math.min(backoff * 2, 30);
   }
