@@ -1,0 +1,24 @@
+services:
+  mvh-hy2:
+    build: .
+    container_name: mvh-hy2
+    restart: unless-stopped
+    ports:
+      - "${PORT:-7682}:${PORT:-7682}/tcp"
+      - "${HY2_PORT:-7682}:${HY2_PORT:-7682}/udp"
+    environment:
+      PORT: "${PORT:-7682}"
+      HY2_PORT: "${HY2_PORT:-7682}"
+      PUBLIC_HOST: "${PUBLIC_HOST:-}"
+      PUBLIC_PORT: "${PUBLIC_PORT:-7682}"
+      SUB_PATH: "${SUB_PATH:-}"
+      NODE_NAME: "${NODE_NAME:-MVH-HY2}"
+      AUTH_PASS: "${AUTH_PASS:-}"
+      SNI_HOST: "${SNI_HOST:-www.bing.com}"
+      SNI_GUARD: "${SNI_GUARD:-strict}"
+      HY2_DIR: "/app/data"
+    volumes:
+      - mvh-hy2-data:/app/data
+
+volumes:
+  mvh-hy2-data:
