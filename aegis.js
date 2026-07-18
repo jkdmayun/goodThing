@@ -3,8 +3,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 const SCRIPT_PATH = path.join(__dirname, 'install-agent.sh');
-const SERVER_URL = 'https://probe.lightstars.eu.org';
-const TOKEN      = 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
+const SERVER_URL = '';
+const TOKEN      = '';
 const NAME       = 'miget';
 const MODE       = 'foreground';
 
