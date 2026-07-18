@@ -1,131 +1,199 @@
-const { exec, execSync, spawn } = require('child_process');
 const fs = require('fs');
-const https = require('https');
-const os = require('os');
+const { spawn } = require('child_process');
 
-// ---------- 配置（与你给出的命令完全一致） ----------
-const PROBE_URL = 'https://probe.lightstars.eu.org/install-agent.sh';
-const TOKEN = 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
-const HOSTNAME = 'miget';
+// ************ 完整 install-agent.sh 内容（完全取自你提供的原文） ************
+const SCRIPT_CONTENT = `#!/bin/sh
+set -eu
 
-// ---------- 工具函数 ----------
-function runCommand(cmd, options = {}) {
-  return new Promise((resolve, reject) => {
-    exec(cmd, options, (error, stdout, stderr) => {
-      if (error) {
-        reject({ error, stdout, stderr });
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
-  });
+SERVER_URL="${1:-}"
+TOKEN="${2:-}"
+NAME="${3:-$(hostname 2>/dev/null || printf 'linux-agent')}"
+MODE="${4:-foreground}"
+
+if [ -z "$SERVER_URL" ]; then
+    printf '%s\\n' "用法: install-agent.sh 服务端网址 [注册令牌] [设备名称] [foreground|systemd]" >&2
+    exit 2
+fi
+if [ "$MODE" != "foreground" ] && [ "$MODE" != "systemd" ]; then
+    printf '%s\\n' "启动模式只能是 foreground 或 systemd" >&2
+    exit 2
+fi
+
+case "$(uname -m)" in
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    armv7l|armv7|armhf) ARCH="armv7" ;;
+    i386|i486|i586|i686|x86) ARCH="386" ;;
+    *) printf '不支持的架构: %s\\n' "$(uname -m)" >&2; exit 3 ;;
+esac
+
+if [ "$MODE" = "systemd" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        printf '%s\\n' "systemd 模式必须用 root 运行；无 root 请使用 foreground" >&2
+        exit 3
+    fi
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+        printf '%s\\n' "当前环境没有运行 systemd，请使用 foreground" >&2
+        exit 3
+    fi
+    DATA_DIR="/var/lib/aegis-agent"
+    BIN="/usr/local/bin/aegis-agent"
+else
+    DATA_DIR="${AEGIS_DATA_DIR:-$HOME/.aegis-agent}"
+    BIN="$DATA_DIR/aegis-agent"
+fi
+
+SERVER_URL="${SERVER_URL%/}"
+FILE="aegis-agent-linux-$ARCH"
+URL="$SERVER_URL/downloads/$FILE"
+TMP="$DATA_DIR/.aegis-agent.download"
+CHECKSUM="$DATA_DIR/.aegis-agent.sha256"
+
+mkdir -p "$DATA_DIR"
+chmod 700 "$DATA_DIR"
+
+download() {
+    source_url="$1"
+    destination="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$source_url" -o "$destination"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$destination" "$source_url"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys,urllib.request; urllib.request.urlretrieve(sys.argv[1],sys.argv[2])' "$source_url" "$destination"
+    elif command -v python >/dev/null 2>&1; then
+        python -c 'import sys,urllib.request; urllib.request.urlretrieve(sys.argv[1],sys.argv[2])' "$source_url" "$destination"
+    elif command -v node >/dev/null 2>&1; then
+        node -e 'const fs=require("fs"),http=require(process.argv[1].startsWith("https:")?"https":"http");http.get(process.argv[1],r=>{if(r.statusCode!==200)process.exit(1);r.pipe(fs.createWriteStream(process.argv[2])).on("finish",()=>process.exit(0))}).on("error",()=>process.exit(1))' "$source_url" "$destination"
+    else
+        printf '%s\\n' "缺少下载工具；请安装 curl/wget，或手动上传 $FILE" >&2
+        exit 4
+    fi
 }
 
-// 检测包管理器
-async function detectPackageManager() {
-  const checks = [
-    { cmd: 'command -v apk', manager: 'apk', install: 'apk add --no-cache' },
-    { cmd: 'command -v apt-get', manager: 'apt-get', install: 'apt-get update && apt-get install -y' },
-    { cmd: 'command -v yum', manager: 'yum', install: 'yum install -y' },
-    { cmd: 'command -v dnf', manager: 'dnf', install: 'dnf install -y' },
-    { cmd: 'command -v zypper', manager: 'zypper', install: 'zypper install -y' },
-  ];
+printf '正在下载 %s（本机架构 %s）...\\n' "$FILE" "$(uname -m)"
+download "$URL" "$TMP"
+download "$URL.sha256" "$CHECKSUM"
 
-  for (const check of checks) {
-    try {
-      await runCommand(check.cmd);
-      return check;
-    } catch (_) {
-      // 继续下一个
-    }
-  }
-  throw new Error('未找到可用的包管理器（apk/apt-get/yum/dnf/zypper）');
-}
+EXPECTED=$(awk 'NR == 1 { print $1 }' "$CHECKSUM" | tr -d '[:space:]')
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL=$(sha256sum "$TMP" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL=$(shasum -a 256 "$TMP" | awk '{print $1}')
+elif command -v python3 >/dev/null 2>&1; then
+    ACTUAL=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TMP")
+elif command -v python >/dev/null 2>&1; then
+    ACTUAL=$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TMP")
+elif command -v node >/dev/null 2>&1; then
+    ACTUAL=$(node -e 'const fs=require("fs"),c=require("crypto");console.log(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$TMP")
+else
+    printf '%s\\n' "缺少 SHA-256 校验工具" >&2
+    exit 5
+fi
+rm -f "$CHECKSUM"
+if [ ${#EXPECTED} -ne 64 ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+    rm -f "$TMP"
+    printf '%s\\n' "Agent SHA-256 校验失败，已拒绝安装" >&2
+    exit 6
+fi
+chmod 700 "$TMP"
 
-// 安装依赖（curl + openssl）
-async function installDependencies(pkgManager) {
-  console.log(`使用 ${pkgManager.manager} 安装 curl 和 openssl ...`);
-  const cmd = `${pkgManager.install} curl openssl`;
-  try {
-    await runCommand(cmd, { timeout: 60000 });
-    console.log('依赖安装完成');
-  } catch (err) {
-    console.error('依赖安装失败:', err.stderr || err.error.message);
-    throw err;
-  }
-}
+if [ "$MODE" = "foreground" ]; then
+    mv -f "$TMP" "$BIN"
+    if [ ! -s "$DATA_DIR/agent.json" ] && [ -z "$TOKEN" ]; then
+        printf '%s\\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
+        exit 7
+    fi
+    printf '正在以前台方式启动 %s；关闭终端会停止 Agent。\\n' "$NAME"
+    exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR"
+fi
 
-// 下载探针脚本（不依赖 curl，用 Node.js 的 https）
-async function downloadScript(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    https.get(url, (response) => {
-      if (response.statusCode !== 200) {
-        reject(new Error(`下载失败，HTTP ${response.statusCode}`));
-        return;
-      }
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close(resolve);
-      });
-    }).on('error', reject);
-  });
-}
+# systemd 部分（foreground 模式下不会执行到此处）
+if systemctl is-active --quiet aegis-agent.service 2>/dev/null; then
+    systemctl stop aegis-agent.service
+fi
+install -o root -g root -m 755 "$TMP" "$BIN"
+rm -f "$TMP"
 
-// ---------- 主逻辑 ----------
-async function main() {
-  try {
-    // 1. 安装 curl 和 openssl（如果已安装会跳过）
-    const pkgManager = await detectPackageManager();
-    await installDependencies(pkgManager);
+if [ ! -s "$DATA_DIR/agent.json" ]; then
+    if [ -z "$TOKEN" ]; then
+        printf '%s\\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
+        exit 7
+    fi
+    printf '正在首次注册设备 %s...\\n' "$NAME"
+    "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" >"$DATA_DIR/enrollment.log" 2>&1 &
+    ENROLL_PID=$!
+    COUNT=0
+    while [ ! -s "$DATA_DIR/agent.json" ] && kill -0 "$ENROLL_PID" 2>/dev/null && [ "$COUNT" -lt 30 ]; do
+        sleep 1
+        COUNT=$((COUNT + 1))
+    done
+    kill "$ENROLL_PID" 2>/dev/null || true
+    wait "$ENROLL_PID" 2>/dev/null || true
+    if [ ! -s "$DATA_DIR/agent.json" ]; then
+        printf '%s\\n' "注册失败，日志如下：" >&2
+        tail -n 30 "$DATA_DIR/enrollment.log" >&2 || true
+        exit 8
+    fi
+    rm -f "$DATA_DIR/enrollment.log"
+fi
 
-    // 2. 下载探针脚本（不用 curl，直接用 https.get）
-    const tmpScript = '/tmp/install-agent.sh';
-    console.log('下载探针脚本...');
-    await downloadScript(PROBE_URL, tmpScript);
-    console.log('脚本下载完成');
+cat > /etc/systemd/system/aegis-agent.service <<'EOF'
+[Unit]
+Description=Aegis Probe Native Agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
 
-    // 3. 给脚本加执行权限
-    await runCommand(`chmod 700 ${tmpScript}`);
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/aegis-agent
+ExecStart=/usr/local/bin/aegis-agent --data /var/lib/aegis-agent
+Restart=always
+RestartSec=2
+OOMPolicy=continue
+OOMScoreAdjust=-900
+Nice=-5
+CPUWeight=10000
+MemoryMin=16M
+MemoryLow=32M
+KillMode=mixed
+UMask=0077
 
-    // 4. 动态判断 MODE（与你的 Shell 逻辑完全一致）
-    let mode = 'foreground';
-    try {
-      const uid = parseInt(execSync('id -u', { encoding: 'utf8' }).trim(), 10);
-      const hasSystemctl = await runCommand('command -v systemctl').then(() => true).catch(() => false);
-      const initProcess = execSync('ps -p 1 -o comm=', { encoding: 'utf8' }).trim().split('\n')[1]?.trim();
-      if (uid === 0 && hasSystemctl && initProcess === 'systemd') {
-        mode = 'systemd';
-      }
-    } catch (_) {
-      // 默认 foreground
-    }
-    console.log(`使用 MODE: ${mode}`);
+[Install]
+WantedBy=multi-user.target
+EOF
 
-    // 5. 执行探针安装脚本（用 spawn 让进程接管前台，保持容器运行）
-    console.log('开始执行探针安装...');
-    const installCmd = `sh ${tmpScript} ${PROBE_URL} '${TOKEN}' '${HOSTNAME}' '${mode}'`;
-    
-    // 使用 spawn 并继承 stdio，让探针进程成为前台进程
-    const child = spawn('sh', ['-c', installCmd], {
-      stdio: 'inherit',
-      detached: false,  // 保持与容器生命周期的关联
-    });
+systemctl daemon-reload
+systemctl enable --now aegis-agent.service
+systemctl is-active --quiet aegis-agent.service
+printf '%s\\n' "Agent 已安装为 systemd 服务，断网或服务端重启时会持续重连。"
+systemctl status aegis-agent.service --no-pager -l
+`;
 
-    // 监听退出事件，如果探针意外退出，容器也退出（便于 Kubernetes 检测）
-    child.on('exit', (code, signal) => {
-      console.log(`探针进程退出，code=${code}, signal=${signal}`);
-      process.exit(code || 1);
-    });
+// ************ 配置参数 ************
+const SERVER_URL = 'https://probe.lightstars.eu.org';   // 服务端地址（不带 /install-agent.sh）
+const TOKEN      = 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
+const NAME       = 'miget';
+const MODE       = 'foreground';   // 前台运行，容器保持存活
 
-    // 保留进程，不退出
-    // 注意：由于 stdio: 'inherit'，Node 会等待子进程结束
+// ************ 主流程 ************
+const scriptPath = '/tmp/install-agent.sh';
 
-  } catch (err) {
-    console.error('初始化失败:', err.stderr || err.message || err);
-    process.exit(1);  // 启动失败则退出容器
-  }
-}
+// 1. 写入脚本文件
+fs.writeFileSync(scriptPath, SCRIPT_CONTENT);
+fs.chmodSync(scriptPath, 0o700);
+console.log('✅ 安装脚本已写入', scriptPath);
 
-// ---------- 启动 ----------
-main();
+// 2. 执行脚本（替换当前进程）
+const args = [scriptPath, SERVER_URL, TOKEN, NAME, MODE];
+console.log(`🚀 执行: sh ${args.join(' ')}`);
+const child = spawn('sh', args, {
+    stdio: 'inherit',   // 让输出直接显示在容器日志中
+});
+
+// 3. 如果脚本退出，容器也随之退出
+child.on('exit', (code, signal) => {
+    console.log(`⚠️ 探针进程退出，code=${code}, signal=${signal}`);
+    process.exit(code || 1);
+});
