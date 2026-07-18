@@ -1,8 +1,8 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-// ************ 完整 install-agent.sh 内容（完全取自你提供的原文） ************
-const SCRIPT_CONTENT = `#!/bin/sh
+// ************ 使用 String.raw 避免模板插值 ************
+const SCRIPT_CONTENT = String.raw`#!/bin/sh
 set -eu
 
 SERVER_URL="${1:-}"
@@ -11,11 +11,11 @@ NAME="${3:-$(hostname 2>/dev/null || printf 'linux-agent')}"
 MODE="${4:-foreground}"
 
 if [ -z "$SERVER_URL" ]; then
-    printf '%s\\n' "用法: install-agent.sh 服务端网址 [注册令牌] [设备名称] [foreground|systemd]" >&2
+    printf '%s\n' "用法: install-agent.sh 服务端网址 [注册令牌] [设备名称] [foreground|systemd]" >&2
     exit 2
 fi
 if [ "$MODE" != "foreground" ] && [ "$MODE" != "systemd" ]; then
-    printf '%s\\n' "启动模式只能是 foreground 或 systemd" >&2
+    printf '%s\n' "启动模式只能是 foreground 或 systemd" >&2
     exit 2
 fi
 
@@ -24,16 +24,16 @@ case "$(uname -m)" in
     aarch64|arm64) ARCH="arm64" ;;
     armv7l|armv7|armhf) ARCH="armv7" ;;
     i386|i486|i586|i686|x86) ARCH="386" ;;
-    *) printf '不支持的架构: %s\\n' "$(uname -m)" >&2; exit 3 ;;
+    *) printf '不支持的架构: %s\n' "$(uname -m)" >&2; exit 3 ;;
 esac
 
 if [ "$MODE" = "systemd" ]; then
     if [ "$(id -u)" -ne 0 ]; then
-        printf '%s\\n' "systemd 模式必须用 root 运行；无 root 请使用 foreground" >&2
+        printf '%s\n' "systemd 模式必须用 root 运行；无 root 请使用 foreground" >&2
         exit 3
     fi
     if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
-        printf '%s\\n' "当前环境没有运行 systemd，请使用 foreground" >&2
+        printf '%s\n' "当前环境没有运行 systemd，请使用 foreground" >&2
         exit 3
     fi
     DATA_DIR="/var/lib/aegis-agent"
@@ -66,12 +66,12 @@ download() {
     elif command -v node >/dev/null 2>&1; then
         node -e 'const fs=require("fs"),http=require(process.argv[1].startsWith("https:")?"https":"http");http.get(process.argv[1],r=>{if(r.statusCode!==200)process.exit(1);r.pipe(fs.createWriteStream(process.argv[2])).on("finish",()=>process.exit(0))}).on("error",()=>process.exit(1))' "$source_url" "$destination"
     else
-        printf '%s\\n' "缺少下载工具；请安装 curl/wget，或手动上传 $FILE" >&2
+        printf '%s\n' "缺少下载工具；请安装 curl/wget，或手动上传 $FILE" >&2
         exit 4
     fi
 }
 
-printf '正在下载 %s（本机架构 %s）...\\n' "$FILE" "$(uname -m)"
+printf '正在下载 %s（本机架构 %s）...\n' "$FILE" "$(uname -m)"
 download "$URL" "$TMP"
 download "$URL.sha256" "$CHECKSUM"
 
@@ -87,13 +87,13 @@ elif command -v python >/dev/null 2>&1; then
 elif command -v node >/dev/null 2>&1; then
     ACTUAL=$(node -e 'const fs=require("fs"),c=require("crypto");console.log(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$TMP")
 else
-    printf '%s\\n' "缺少 SHA-256 校验工具" >&2
+    printf '%s\n' "缺少 SHA-256 校验工具" >&2
     exit 5
 fi
 rm -f "$CHECKSUM"
 if [ ${#EXPECTED} -ne 64 ] || [ "$EXPECTED" != "$ACTUAL" ]; then
     rm -f "$TMP"
-    printf '%s\\n' "Agent SHA-256 校验失败，已拒绝安装" >&2
+    printf '%s\n' "Agent SHA-256 校验失败，已拒绝安装" >&2
     exit 6
 fi
 chmod 700 "$TMP"
@@ -101,10 +101,10 @@ chmod 700 "$TMP"
 if [ "$MODE" = "foreground" ]; then
     mv -f "$TMP" "$BIN"
     if [ ! -s "$DATA_DIR/agent.json" ] && [ -z "$TOKEN" ]; then
-        printf '%s\\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
+        printf '%s\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
         exit 7
     fi
-    printf '正在以前台方式启动 %s；关闭终端会停止 Agent。\\n' "$NAME"
+    printf '正在以前台方式启动 %s；关闭终端会停止 Agent。\n' "$NAME"
     exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR"
 fi
 
@@ -117,10 +117,10 @@ rm -f "$TMP"
 
 if [ ! -s "$DATA_DIR/agent.json" ]; then
     if [ -z "$TOKEN" ]; then
-        printf '%s\\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
+        printf '%s\n' "首次注册必须提供注册令牌；已有 agent.json 的升级可以留空" >&2
         exit 7
     fi
-    printf '正在首次注册设备 %s...\\n' "$NAME"
+    printf '正在首次注册设备 %s...\n' "$NAME"
     "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" >"$DATA_DIR/enrollment.log" 2>&1 &
     ENROLL_PID=$!
     COUNT=0
@@ -131,7 +131,7 @@ if [ ! -s "$DATA_DIR/agent.json" ]; then
     kill "$ENROLL_PID" 2>/dev/null || true
     wait "$ENROLL_PID" 2>/dev/null || true
     if [ ! -s "$DATA_DIR/agent.json" ]; then
-        printf '%s\\n' "注册失败，日志如下：" >&2
+        printf '%s\n' "注册失败，日志如下：" >&2
         tail -n 30 "$DATA_DIR/enrollment.log" >&2 || true
         exit 8
     fi
@@ -167,32 +167,27 @@ EOF
 systemctl daemon-reload
 systemctl enable --now aegis-agent.service
 systemctl is-active --quiet aegis-agent.service
-printf '%s\\n' "Agent 已安装为 systemd 服务，断网或服务端重启时会持续重连。"
+printf '%s\n' "Agent 已安装为 systemd 服务，断网或服务端重启时会持续重连。"
 systemctl status aegis-agent.service --no-pager -l
 `;
 
 // ************ 配置参数 ************
-const SERVER_URL = 'https://probe.lightstars.eu.org';   // 服务端地址（不带 /install-agent.sh）
+const SERVER_URL = 'https://probe.lightstars.eu.org';   // ✅ 正确的服务端地址
 const TOKEN      = 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
 const NAME       = 'miget';
-const MODE       = 'foreground';   // 前台运行，容器保持存活
+const MODE       = 'foreground';
 
 // ************ 主流程 ************
 const scriptPath = '/tmp/install-agent.sh';
 
-// 1. 写入脚本文件
 fs.writeFileSync(scriptPath, SCRIPT_CONTENT);
 fs.chmodSync(scriptPath, 0o700);
 console.log('✅ 安装脚本已写入', scriptPath);
 
-// 2. 执行脚本（替换当前进程）
 const args = [scriptPath, SERVER_URL, TOKEN, NAME, MODE];
 console.log(`🚀 执行: sh ${args.join(' ')}`);
-const child = spawn('sh', args, {
-    stdio: 'inherit',   // 让输出直接显示在容器日志中
-});
+const child = spawn('sh', args, { stdio: 'inherit' });
 
-// 3. 如果脚本退出，容器也随之退出
 child.on('exit', (code, signal) => {
     console.log(`⚠️ 探针进程退出，code=${code}, signal=${signal}`);
     process.exit(code || 1);
