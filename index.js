@@ -1,27 +1,18 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
-const path = require('path');
 const https = require('https');
 
-// 远程脚本 URL
 const SCRIPT_URL = 'https://probe.lightstars.eu.org/install-agent.sh';
-// 环境变量（建议从 process.env 读取）
 const SERVER_URL = process.env.SERVER_URL || 'https://probe.lightstars.eu.org/';
 const TOKEN      = process.env.TOKEN || 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
 const NAME       = 'Back4App';
 const MODE       = 'foreground';
-
-// 临时文件路径
 const TMP_SCRIPT = '/tmp/install-agent.sh';
 
-/**
- * 从 URL 下载文件
- */
 function downloadFile(url, dest) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(dest);
         https.get(url, (response) => {
-            // 处理重定向
             if (response.statusCode === 301 || response.statusCode === 302) {
                 downloadFile(response.headers.location, dest).then(resolve).catch(reject);
                 return;
@@ -31,10 +22,7 @@ function downloadFile(url, dest) {
                 return;
             }
             response.pipe(file);
-            file.on('finish', () => {
-                file.close();
-                resolve();
-            });
+            file.on('finish', () => { file.close(); resolve(); });
             file.on('error', reject);
         }).on('error', reject);
     });
@@ -46,27 +34,23 @@ async function main() {
         await downloadFile(SCRIPT_URL, TMP_SCRIPT);
         console.log('✅ 下载完成');
 
-        // 添加可执行权限
         fs.chmodSync(TMP_SCRIPT, 0o700);
 
-        // 读取并修改脚本（添加 --insecure）
-        let scriptContent = fs.readFileSync(TMP_SCRIPT, 'utf8');
-        scriptContent = scriptContent.replace(
-            /exec "\$BIN" --server "\$SERVER_URL" --token "\$TOKEN" --name "\$NAME" --data "\$DATA_DIR"/,
-            'exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" --insecure'
-        );
-        fs.writeFileSync(TMP_SCRIPT, scriptContent);
-        console.log('✅ 已添加 --insecure 参数');
+        // ⚠️ 注意：不再添加 --insecure 参数
+        console.log('🚀 正在启动 Agent...');
 
-        // 执行脚本
         const args = [TMP_SCRIPT, SERVER_URL, TOKEN, NAME, MODE];
-        console.log(`🚀 执行: sh ${args.join(' ')}`);
+        console.log(`📋 执行: sh ${args.join(' ')}`);
+
         const child = spawn('sh', args, { stdio: 'inherit' });
 
         child.on('exit', (code, signal) => {
-            console.log(`⚠️ 探针进程退出，code=${code}, signal=${signal}`);
+            console.log(`⚠️ Agent 进程退出，code=${code}, signal=${signal}`);
             process.exit(code || 1);
         });
+
+        // 保持进程运行
+        console.log('✅ Agent 已启动，容器保持运行中...');
 
     } catch (err) {
         console.error(`❌ 错误: ${err.message}`);
