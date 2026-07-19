@@ -1,40 +1,80 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
+const https = require('https');
 
-const SCRIPT_PATH = path.join(__dirname, 'install-agent.sh');
-const SERVER_URL = 'https://probe.lightstars.eu.org/';
-const TOKEN      = 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
+// 远程脚本 URL
+const SCRIPT_URL = 'https://probe.lightstars.eu.org/install-agent.sh';
+// 环境变量（建议从 process.env 读取）
+const SERVER_URL = process.env.SERVER_URL || 'https://probe.lightstars.eu.org/';
+const TOKEN      = process.env.TOKEN || 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
 const NAME       = 'Back4App';
 const MODE       = 'foreground';
 
-// 1. 读取原始安装脚本
-let scriptContent = fs.readFileSync(SCRIPT_PATH, 'utf8');
+// 临时文件路径
+const TMP_SCRIPT = '/tmp/install-agent.sh';
 
-// 2. 修改启动命令，添加 --insecure（跳过证书验证）
-//    原行：exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR"
-//    改为：exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" --insecure
-scriptContent = scriptContent.replace(
-    /exec "\$BIN" --server "\$SERVER_URL" --token "\$TOKEN" --name "\$NAME" --data "\$DATA_DIR"/,
-    'exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" --insecure'
-);
+/**
+ * 从 URL 下载文件
+ */
+function downloadFile(url, dest) {
+    return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(dest);
+        https.get(url, (response) => {
+            // 处理重定向
+            if (response.statusCode === 301 || response.statusCode === 302) {
+                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+                return;
+            }
+            if (response.statusCode !== 200) {
+                reject(new Error(`下载失败，HTTP ${response.statusCode}`));
+                return;
+            }
+            response.pipe(file);
+            file.on('finish', () => {
+                file.close();
+                resolve();
+            });
+            file.on('error', reject);
+        }).on('error', reject);
+    });
+}
 
-// 3. 将修改后的脚本写入临时文件
-const tmpScript = '/tmp/install-agent.sh';
-fs.writeFileSync(tmpScript, scriptContent);
-fs.chmodSync(tmpScript, 0o700);
+async function main() {
+    try {
+        console.log(`📥 正在下载脚本: ${SCRIPT_URL}`);
+        await downloadFile(SCRIPT_URL, TMP_SCRIPT);
+        console.log('✅ 下载完成');
 
-console.log('✅ 已生成修改后的安装脚本（含 --insecure）');
+        // 添加可执行权限
+        fs.chmodSync(TMP_SCRIPT, 0o700);
 
-// 4. 执行脚本
-const args = [tmpScript, SERVER_URL, TOKEN, NAME, MODE];
-console.log(`🚀 执行: sh ${args.join(' ')}`);
-const child = spawn('sh', args, { stdio: 'inherit' });
+        // 读取并修改脚本（添加 --insecure）
+        let scriptContent = fs.readFileSync(TMP_SCRIPT, 'utf8');
+        scriptContent = scriptContent.replace(
+            /exec "\$BIN" --server "\$SERVER_URL" --token "\$TOKEN" --name "\$NAME" --data "\$DATA_DIR"/,
+            'exec "$BIN" --server "$SERVER_URL" --token "$TOKEN" --name "$NAME" --data "$DATA_DIR" --insecure'
+        );
+        fs.writeFileSync(TMP_SCRIPT, scriptContent);
+        console.log('✅ 已添加 --insecure 参数');
 
-child.on('exit', (code, signal) => {
-    console.log(`⚠️ 探针进程退出，code=${code}, signal=${signal}`);
-    process.exit(code || 1);
-});
+        // 执行脚本
+        const args = [TMP_SCRIPT, SERVER_URL, TOKEN, NAME, MODE];
+        console.log(`🚀 执行: sh ${args.join(' ')}`);
+        const child = spawn('sh', args, { stdio: 'inherit' });
+
+        child.on('exit', (code, signal) => {
+            console.log(`⚠️ 探针进程退出，code=${code}, signal=${signal}`);
+            process.exit(code || 1);
+        });
+
+    } catch (err) {
+        console.error(`❌ 错误: ${err.message}`);
+        process.exit(1);
+    }
+}
+
+main();
 // #!/usr/bin/env node
 // 'use strict';
 
