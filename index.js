@@ -6,7 +6,7 @@ const http = require('http');
 const SCRIPT_URL = 'https://probe.lightstars.eu.org/install-agent.sh';
 const SERVER_URL = process.env.SERVER_URL || 'https://probe.lightstars.eu.org/';
 const TOKEN      = process.env.TOKEN || 'aeg_gtZ2qjo6D1FkOnO-vD14Lj3MGu9kLSL-3NKaLw5JEe0';
-const NAME       = 'Back4App-7682';
+const NAME       = 'belmo-7682';
 const MODE       = 'foreground';
 const TMP_SCRIPT = '/tmp/install-agent.sh';
 
