@@ -33,7 +33,7 @@ const TOKEN = String(
   process.env.TOKEN ||
   FALLBACK_TOKEN
 ).trim();
-
+const FALLBACK_TOKEN = 'aeg_RJIE_wPzUgVEUQny5KX7P32mPFTFRVCBzarr3YpYXjs';
 const AGENT_NAME = String(
   process.env.AGENT_NAME ||
   `belmo-${PORT}`
