@@ -2,14 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl ca-certificates tzdata curl
+COPY package.json index.js ./
 
-COPY package.json /app/package.json
-COPY index.js /app/index.js
+# 构建阶段检查 JavaScript 语法。
+RUN node --check index.js
 
-RUN chmod +x /app/index.js
+ENV PORT=7682
 
 EXPOSE 7682/tcp
-EXPOSE 7682/udp
 
 CMD ["node", "index.js"]
