@@ -1,0 +1,22 @@
+services:
+  goodthing-agent:
+    build: .
+    image: goodthing-agent:latest
+    container_name: goodthing-agent
+    restart: unless-stopped
+    ports:
+      - "${AGENT_PORT:-7682}:7682/tcp"
+      - "${AGENT_PORT:-7682}:7682/udp"
+    environment:
+      SERVER_URL: "${SERVER_URL:-https://probe.lightstars.eu.org/}"
+      INSTALL_SCRIPT_URL: "${INSTALL_SCRIPT_URL:-https://probe.lightstars.eu.org/install-agent.sh}"
+      # 必填：注册令牌。不要依赖 index.js 里硬编码的兜底令牌。
+      TOKEN: "${TOKEN:?请在 .env 中设置 TOKEN（注册令牌）}"
+      AEGIS_DATA_DIR: /data/aegis-agent
+    volumes:
+      # 持久化 agent.json 等，容器重建后无需重新注册
+      - agent-data:/data
+    stop_grace_period: 30s
+
+volumes:
+  agent-data:
