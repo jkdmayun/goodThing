@@ -1,212 +1,91 @@
-const fs = require('fs');
-const { spawn } = require('child_process');
-const https = require('https');
-const http = require('http');
+#!/usr/bin/env node
+// goodThing — Hysteria2 探针 Agent 节点包装器
+// 1) 在 7682 端口起健康检查服务（curl http://127.0.0.1:7682/ 返回 OK）
+// 2) 从服务端下载 install-agent.sh 并以 foreground 模式运行 agent
+// 3) agent 退出后 5 秒自动重启（守护循环）
+//
+// 环境变量：
+//   SERVER_URL         服务端地址           默认 https://probe.lightstars.eu.org/
+//   TOKEN              注册令牌（仅首次注册必填；已有 agent.json 后可留空）
+//   INSTALL_SCRIPT_URL 安装脚本地址         默认 ${SERVER_URL}/install-agent.sh
+//   AEGIS_DATA_DIR     Agent 数据目录        默认 /tmp/aegis-agent-7682
+//   HEALTH_PORT        健康检查端口         默认 7682
 
-const SCRIPT_URL =
-    process.env.INSTALL_SCRIPT_URL ||
-    'https://probe.lightstars.eu.org/install-agent.sh';
+"use strict";
 
-const SERVER_URL =
-    process.env.SERVER_URL ||
-    'https://probe.lightstars.eu.org/';
+const http = require("http");
+const https = require("https");
+const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
-// 优先读取平台环境变量。
-// 如果平台不能设置环境变量，把新令牌填入下面的空字符串。
-const TOKEN =
-    process.env.TOKEN ||
-    'aeg_RJIE_wPzUgVEUQny5KX7P32mPFTFRVCBzarr3YpYXjs';
+const HEALTH_PORT = Number(process.env.HEALTH_PORT || 7682);
+const SERVER_URL = (process.env.SERVER_URL || "https://probe.lightstars.eu.org/").replace(/\/+$/, "");
+const TOKEN = process.env.TOKEN || "";
+const INSTALL_SCRIPT_URL = process.env.INSTALL_SCRIPT_URL || `${SERVER_URL}/install-agent.sh`;
+const DATA_DIR = process.env.AEGIS_DATA_DIR || "/tmp/aegis-agent-7682";
+const SCRIPT = path.join(DATA_DIR, "install-agent.sh");
 
-// 保持原来的设备名称。
-const NAME = 'belmo-7682';
-const MODE = 'foreground';
-const TMP_SCRIPT = '/tmp/install-agent.sh';
-
-// 唯一关键修复：不再使用只读的 /root/.aegis-agent。
-const DATA_DIR =
-    process.env.AEGIS_DATA_DIR ||
-    '/tmp/aegis-agent-7682';
-
-// ---------- 下载远程脚本 ----------
-function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-
-        const client =
-            url.startsWith('https:')
-                ? https
-                : http;
-
-        client.get(url, (response) => {
-            if (
-                response.statusCode === 301 ||
-                response.statusCode === 302
-            ) {
-                response.resume();
-
-                file.close(() => {
-                    const nextURL = new URL(
-                        response.headers.location,
-                        url
-                    ).toString();
-
-                    downloadFile(nextURL, dest)
-                        .then(resolve)
-                        .catch(reject);
-                });
-
-                return;
-            }
-
-            if (response.statusCode !== 200) {
-                response.resume();
-
-                file.close(() => {
-                    reject(
-                        new Error(
-                            `下载失败，HTTP ${response.statusCode}`
-                        )
-                    );
-                });
-
-                return;
-            }
-
-            response.pipe(file);
-
-            file.on('finish', () => {
-                file.close();
-                resolve();
-            });
-
-            file.on('error', reject);
-        }).on('error', reject);
+function download(url, dest, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith("https:") ? https : http;
+    const req = mod.get(url, (res) => {
+      // 跟随 301/302 重定向
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        res.resume();
+        if (redirects <= 0) return reject(new Error(`GET ${url} -> 重定向次数过多`));
+        const next = new URL(res.headers.location, url).toString();
+        return download(next, dest, redirects - 1).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`GET ${url} -> HTTP ${res.statusCode}`));
+      }
+      const out = fs.createWriteStream(dest);
+      res.pipe(out);
+      out.on("finish", () => out.close(() => resolve()));
+      out.on("error", reject);
     });
+    req.on("error", reject);
+  });
 }
 
-// ---------- 启动 HTTP 服务器（监听 7682） ----------
-function startHealthCheckServer() {
-    const server = http.createServer((req, res) => {
-        res.writeHead(200, {
-            'Content-Type': 'text/plain'
-        });
-
-        res.end('OK');
-    });
-
-    server.listen(7682, '0.0.0.0', () => {
-        console.log(
-            '✅ 健康检查 HTTP 服务器已启动，监听端口 7682'
-        );
-    });
-
-    server.on('error', (err) => {
-        console.error(
-            '❌ 启动 HTTP 服务器失败:',
-            err.message
-        );
-
-        process.exit(1);
-    });
-
-    return server;
+async function ensureScript() {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(SCRIPT)) {
+    console.log(`[goodThing] downloading ${INSTALL_SCRIPT_URL}`);
+    await download(INSTALL_SCRIPT_URL, SCRIPT);
+    fs.chmodSync(SCRIPT, 0o700);
+  }
 }
 
-// ---------- 主流程 ----------
-async function main() {
-    // 1. 先启动 HTTP 服务器。
-    startHealthCheckServer();
-
-    // 2. 没有令牌时保持 HTTP 服务运行。
-    if (!SERVER_URL || !TOKEN) {
-        console.warn(
-            '⚠️ 环境变量 SERVER_URL 或 TOKEN 未设置，Agent 将不会被启动。'
-        );
-
-        console.warn(
-            '   但容器仍然会保持运行（因 HTTP 服务器存在）。'
-        );
-
-        return;
+function run() {
+  const args = [SCRIPT, SERVER_URL, TOKEN, os.hostname(), "foreground"];
+  const child = spawn("sh", args, { stdio: "inherit" });
+  child.on("exit", (code) => {
+    if (code === 7) {
+      // install-agent.sh：首次注册缺少令牌
+      console.error("[goodThing] 首次注册需要 TOKEN（export TOKEN=... 或写入 .env）");
+    } else if (code !== 0) {
+      console.error(`[goodThing] agent 退出（code ${code}），5 秒后重启`);
     }
-
-    // 3. 下载并执行 Agent 安装脚本。
-    try {
-        console.log(
-            `📥 正在下载脚本: ${SCRIPT_URL}`
-        );
-
-        await downloadFile(
-            SCRIPT_URL,
-            TMP_SCRIPT
-        );
-
-        console.log('✅ 下载完成');
-
-        fs.chmodSync(
-            TMP_SCRIPT,
-            0o700
-        );
-
-        console.log(
-            '🚀 正在启动 Agent...'
-        );
-
-        // 不再把注册令牌输出到日志。
-        console.log(
-            `📋 参数: SERVER_URL=${SERVER_URL}, ` +
-            `TOKEN=<已隐藏>, ` +
-            `NAME=${NAME}, ` +
-            `MODE=${MODE}, ` +
-            `DATA_DIR=${DATA_DIR}`
-        );
-
-        const args = [
-            TMP_SCRIPT,
-            SERVER_URL,
-            TOKEN,
-            NAME,
-            MODE
-        ];
-
-        const child = spawn(
-            'sh',
-            args,
-            {
-                stdio: 'inherit',
-
-                // 把可写目录传给 install-agent.sh。
-                env: Object.assign(
-                    {},
-                    process.env,
-                    {
-                        AEGIS_DATA_DIR:
-                            DATA_DIR
-                    }
-                )
-            }
-        );
-
-        child.on('exit', (code, signal) => {
-            console.log(
-                `⚠️ Agent 进程退出，` +
-                `code=${code}, ` +
-                `signal=${signal}`
-            );
-        });
-
-        console.log(
-            '✅ Agent 启动命令已执行，等待其运行...'
-        );
-    } catch (err) {
-        console.error(
-            `❌ 下载或启动 Agent 失败: ${err.message}`
-        );
-
-        console.warn(
-            '⚠️ 由于 HTTP 服务器存在，容器将继续运行，但 Agent 可能未正常工作。'
-        );
-    }
+    setTimeout(run, 5000);
+  });
 }
 
-main();
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("OK");
+  })
+  .listen(HEALTH_PORT, "0.0.0.0", () => {
+    console.log(`[goodThing] 健康检查服务已启动：:${HEALTH_PORT}`);
+  });
+
+ensureScript()
+  .then(run)
+  .catch((e) => {
+    console.error("[goodThing] 启动失败：", e.message);
+    process.exit(1);
+  });

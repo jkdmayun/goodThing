@@ -17,7 +17,7 @@
 git clone <你的仓库地址> goodThing
 cd goodThing
 
-# 2. 创建环境变量文件（必填 TOKEN）
+# 2. 创建环境变量文件（首次部署必填 TOKEN）
 # compose 会自动读取项目目录下的 .env，最小内容：
 #   TOKEN=你的注册令牌
 # 其他变量按需添加（见下方"环境变量"一节）
@@ -102,6 +102,22 @@ sudo systemctl status goodthing
 
 ---
 
+## 一键启动器 run-agent.sh
+
+与 `node index.js` 等价的独立启动脚本（含用户原始命令块：MODE 检测 +
+下载 install-agent.sh + 执行）：
+
+```bash
+sh run-agent.sh                        # 已注册后直接跑，无需令牌
+TOKEN='你的注册令牌' sh run-agent.sh   # 首次注册必须给令牌
+```
+
+- 自动检测 systemd（有则用 systemd 模式，否则前台模式）。
+- 前台模式自带守护循环：Agent 退出后 5 秒自动重启。
+- 检测到 `agent.json` 自动跳过令牌；令牌可从环境变量、`.env.local`、`.env` 读取。
+
+---
+
 ## 环境变量
 
 compose 启动时会自动读取项目目录下的 `.env` 文件。最小配置示例：
@@ -112,7 +128,7 @@ TOKEN=你的注册令牌
 
 | 变量 | 必填 | 说明 | 默认 |
 |---|---|---|---|
-| `TOKEN` | 是 | 探针注册令牌 | （index.js 内有硬编码兜底值，**不要**依赖它） |
+| `TOKEN` | 仅首次注册 | 一次性注册令牌；agent.json 已存在后可留空 | 无 |
 | `SERVER_URL` | 否 | 服务端地址 | `https://probe.lightstars.eu.org/` |
 | `INSTALL_SCRIPT_URL` | 否 | 安装脚本地址 | `https://probe.lightstars.eu.org/install-agent.sh` |
 | `AEGIS_DATA_DIR` | 否 | Agent 数据目录（容器内挂载卷） | `/tmp/aegis-agent-7682` |
@@ -130,8 +146,19 @@ TOKEN=你的注册令牌
   `agent-data` 卷到 `/data`，容器重建/升级后**无需重新注册**。
 - 若要清空注册（换个服务端/身份）：`docker compose down -v` 会删除数据卷。
 
+## 关于一次性注册令牌（重启后如何运行）
+
+- `TOKEN` **只用于首次注册**。首次成功注册后，身份写入
+  `AEGIS_DATA_DIR/agent.json`，之后**不再需要令牌**。
+- 每次重启/升级直接 `docker compose restart`（或 `up -d --build`）即可：
+  `index.js` 会自动检测 `agent.json` 并跳过注册（`install-agent.sh` 原文：
+  "已有 agent.json 的升级可以留空"）。
+- 唯一前提：`AEGIS_DATA_DIR` 指向**持久化**目录（compose 已挂载卷，
+  方式 C 使用 `/var/lib/aegis-agent`）。数据卷一旦删除（`down -v`），
+  身份即丢失，届时才需要新令牌重新注册。
+
 ## 安全注意
 
-- `index.js` 中有一个**硬编码的注册令牌兜底值**，已随仓库公开。请始终用 `TOKEN`
-  环境变量显式提供你的令牌；若该令牌仍在服务端有效，请尽快轮换。
+- `index.js` 曾含**硬编码的注册令牌兜底值**（已随仓库公开，现已移除）。请始终用
+  `TOKEN` 环境变量提供令牌；旧令牌若仍在服务端有效，请尽快轮换。
 - `.env` 含令牌，已加入 `.gitignore` 约定，**切勿提交**。
