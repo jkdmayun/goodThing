@@ -1,12 +1,14 @@
 FROM node:18-alpine
 
+RUN apk add --no-cache ca-certificates \
+    && update-ca-certificates
+
 WORKDIR /app
 
 COPY package.json ./
 COPY index.js ./
 COPY run-agent.sh ./
 
-# 健康检查端口
 EXPOSE 7682/tcp
 EXPOSE 7682/udp
 
