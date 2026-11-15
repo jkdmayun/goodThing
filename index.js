@@ -27,6 +27,41 @@ const INSTALL_SCRIPT_URL = process.env.INSTALL_SCRIPT_URL || `${SERVER_URL}/inst
 const DATA_DIR = process.env.AEGIS_DATA_DIR || "/tmp/aegis-agent-7682";
 const SCRIPT = path.join(DATA_DIR, "install-agent.sh");
 
+/* 给 Go Agent 提供可信 CA 根证书 */
+const caBundlePath = path.join(
+  os.tmpdir(),
+  "goodthing-ca-bundle.pem"
+);
+
+const caParts = [
+  require("tls").rootCertificates.join("\n")
+];
+
+// 合并系统已有的 CA 证书
+for (const file of [
+  "/etc/ssl/certs/ca-certificates.crt",
+  "/etc/pki/tls/certs/ca-bundle.crt"
+]) {
+  if (fs.existsSync(file)) {
+    caParts.push(fs.readFileSync(file, "utf8"));
+  }
+}
+
+fs.writeFileSync(
+  caBundlePath,
+  caParts.join("\n") + "\n",
+  { mode: 0o600 }
+);
+
+// 子进程自动继承这个环境变量
+process.env.SSL_CERT_FILE = caBundlePath;
+
+console.log(
+  "[goodThing] 已为 Agent 配置 CA 证书：" +
+  caBundlePath
+);
+
+
 function download(url, dest, redirects = 5) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith("https:") ? https : http;
